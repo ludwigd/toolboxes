@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync mailboxes and update mail database
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/toolbox run -c mailbox sh -c 'mbsync -a && mu index'
+
+[Install]
+WantedBy=default.target
