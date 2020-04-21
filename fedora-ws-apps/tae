@@ -1,0 +1,218 @@
+#!/bin/bash
+#
+# Love Silverblue but hate Flatpak? Welcome to the dark side!
+#
+# Copyright (c) 2020 Damian Ludwig <mail@damianludwig.org>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+exec 3>/dev/null
+
+# Copied from here:
+# https://github.com/containers/toolbox/blob/master/toolbox
+has_prefix()
+{
+    str="$1"
+    prefix="$2"
+    
+    ret_val=1
+    
+    case "$str" in
+        "$prefix"* )
+            ret_val=0
+            ;;
+        * )
+            ret_val=1
+            ;;
+    esac
+    
+    return "$ret_val"
+}
+
+# Copied from here:
+# https://github.com/containers/toolbox/blob/master/toolbox
+ask_for_confirmation()
+{
+    default_response="$1"
+    prompt="$2"
+    ret_val=0
+
+    while true; do
+        printf "%s " "$prompt"
+        read -r user_response
+
+        if [ "$user_response" = "" ] 2>&3; then
+            user_response="$default_response"
+        else
+            user_response=$(echo "$user_response" | tr "[:upper:]" "[:lower:]" 2>&3)
+        fi
+
+        if [ "$user_response" = "no" ] 2>&3 || [ "$user_response" = "n" ] 2>&3; then
+            ret_val=1
+            break
+        elif [ "$user_response" = "yes" ] 2>&3 || [ "$user_response" = "y" ] 2>&3; then
+            ret_val=0
+            break
+        fi
+    done
+
+    return "$ret_val"
+}
+
+exit_if_missing_argument()
+{
+    if [ "$container" = "" ] ||
+	   [ "$launcher" = "" ] ||
+	   [ "$icon" = "" ]; then
+	usage
+	exit 1
+    fi
+    
+}
+
+exit_if_file_not_found()
+{
+    file="$1"
+    if ! [ -f "$file" ]; then
+	echo "No such file: $file"
+	exit 1
+    fi
+}
+
+read_property()
+{
+    file="$1"
+    property_name="$2"
+
+    ret_val=$(cat $file | grep -m 1 -oP "^$property_name=\K.*")
+
+    echo "$ret_val"
+}
+
+usage()
+{
+    echo -e "tae - import apps from your toolbox into the host system"
+    echo -e ""
+    echo -e "Exports app launchers and icons from yout toolbox container to the host, so they"
+    echo -e "will appear in your application menu as if they were installed on the host."
+    echo -e ""
+    echo -e "\033[1;37mUSAGE\033[0m"
+    echo -e "\ttae [-d] -c CONTAINER -l LAUNCHER -i ICON"
+    echo -e ""
+    echo -e "\033[1;37mARGS\033[0m"
+    echo -e "\t-d, --debug       (optional) Show some additional information"
+    echo -e "\t-c, --container   The name of the toolbox container"
+    echo -e "\t-l, --launcher    Launcher (.desktop file) to export"
+    echo -e "\t-i, --icon        Icon to export"
+    echo -e ""
+    echo -e "\033[1;37mTIPS\033[0m"
+    echo -e "\t1. Start from a fresh toolbox using 'toolbox create -c gui-apps'"
+    echo -e "\t2. Run 'sudo dnf install @Fonts librsvg2' to install fonts and and librsvg2"
+    echo -e "\t3. Update from time to time using 'sudo dnf update'"
+    echo -e ""
+    echo -e "\033[1;37mAUTHOR\033[0m"
+    echo -e "\tCopyright (c) 2020 Damian Ludwig <mail@damianludwig.org>"
+}
+
+container=""
+launcher=""
+icon=""
+
+while has_prefix "$1" -; do
+    case $1 in
+	--container | -c )
+	    shift
+	    container=$1
+	    ;;
+	--icon | -i )
+	    shift
+	    icon=$1
+	    ;;
+	--launcher | -l )
+	    shift
+	    launcher=$1
+	    ;;
+	--debug | -d )
+	    exec 3>&2
+	    ;;
+	* )
+	    usage
+	    exit 1
+    esac
+    shift
+done
+
+exit_if_missing_argument
+exit_if_file_not_found "$launcher"
+exit_if_file_not_found "$icon"
+
+echo "debug: launcher to export: $launcher" >&3
+echo "debug: icon to export: $icon" >&3
+echo "debug: toolbox container: $container" >&3
+
+launcher_basename=$(basename $launcher)
+icon_basename=$(basename $icon)
+
+echo "debug: .desktop file basename: $launcher_basename" >&3
+echo "debug: icon file basename: $icon_basename" >&3
+
+app_name=$(read_property "$launcher" "Name")
+app_executable=$(read_property "$launcher" "Exec")
+app_icon=$(read_property "$launcher" "Icon")
+app_categories=$(read_property "$launcher" "Categories")
+app_mimetypes=$(read_property "$launcher" "MimeType")
+
+desktop_entry=$(cat <<-END
+[Desktop Entry]
+Name=$app_name
+Exec=toolbox run -c $container $app_executable
+Icon=$app_icon
+Type=Application
+Categories=$app_categories
+MimeType=$app_mimetype
+Terminal=false
+END
+	     )
+
+custom_launchers_dir=$HOME/.local/share/applications
+custom_icons_dir=$HOME/.local/share/icons
+
+echo "debug: directory for custom launchers: $custom_launchers_dir" >&3
+echo "debug: directory for custom icons: $custom_icons_dir" >&3
+
+echo -e "\n$desktop_entry\n"
+
+prompt=$(printf "\033[1;37mWrite launcher to %s? [Y/n]\033[0m" "$custom_launchers_dir")
+if ask_for_confirmation "y" "$prompt"; then
+    mkdir -p $custom_launchers_dir
+    echo -e "$desktop_entry" > $custom_launchers_dir/$launcher_basename
+
+    prompt=$(printf "\033[1;37mDo you wish to edit the file manually? [y/N]\033[0m")
+    if ask_for_confirmation "n" "$prompt"; then
+	if [ "$EDITOR" = "" ]; then
+	    EDITOR="vi"
+	fi
+	"$EDITOR" "$custom_launchers_dir/$launcher_basename"
+    fi
+fi
+
+prompt=$(printf "\033[1;37mWrite icon to %s? [Y/n]\033[0m" "$custom_icons_dir")
+if ask_for_confirmation "y" "$prompt"; then
+    mkdir -p $custom_icons_dir
+    cp $icon $custom_icons_dir/$icon_basename
+fi
+
+exit 0
+
+
